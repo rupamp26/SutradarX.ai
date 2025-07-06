@@ -1,10 +1,3 @@
-<<<<<<< HEAD
-# Firebase Studio
-
-This is a NextJS starter in Firebase Studio.
-
-To get started, take a look at src/app/page.tsx.
-=======
 # SutradharX: Programmable UPI Escrow on Aptos
 
 ![SutradharX Logo](https://via.placeholder.com/150x50?text=SutradharX)
@@ -293,13 +286,3 @@ class AuthService {
 ## 🤝 Contributing
 
 We welcome contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting pull requests.
-
-## 📜 License
-
-SutradharX is [MIT Licensed](LICENSE).
-
----
-
-**Build the future of programmable payments in India with us!** 🚀🇮🇳
->>>>>>> 1c411363af5d2c59873f15998e5809098ab01089
-"# SutradharX_ai" 
