@@ -283,6 +283,7 @@ class AuthService {
 - **Business**: Clear value proposition for judges
 - **Future**: Roadmap for post-hackathon development
 
-## 🤝 Contributing
+## 🤝 Auther Details
 
-We welcome contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting pull requests.
+Rupam Karmakar - rupamkarmakar1105@gmail.com
+
