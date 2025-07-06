@@ -1,0 +1,509 @@
+module sutradharx::escrow {
+    use std::signer;
+    use std::vector;
+    use std::option::{Self, Option};
+    use std::string::{Self, String};
+    use aptos_framework::coin;
+    use aptos_framework::aptos_coin::AptosCoin;
+    use aptos_framework::timestamp;
+    use aptos_framework::event;
+    use aptos_framework::account;
+
+    /// Error codes
+    const E_NOT_AUTHORIZED: u64 = 1;
+    const E_ESCROW_NOT_FOUND: u64 = 2;
+    const E_INVALID_STATE: u64 = 3;
+    const E_INSUFFICIENT_FUNDS: u64 = 4;
+    const E_ESCROW_EXPIRED: u64 = 5;
+    const E_ALREADY_DISPUTED: u64 = 6;
+    const E_DISPUTE_WINDOW_CLOSED: u64 = 7;
+    const E_INVALID_PARTICIPANT: u64 = 8;
+
+    /// Escrow states
+    const STATE_PENDING: u8 = 0;
+    const STATE_FUNDED: u8 = 1;
+    const STATE_COMPLETED: u8 = 2;
+    const STATE_DISPUTED: u8 = 3;
+    const STATE_RESOLVED: u8 = 4;
+    const STATE_CANCELLED: u8 = 5;
+
+    /// Dispute resolution types
+    const RESOLUTION_BUYER_FAVOR: u8 = 0;
+    const RESOLUTION_SELLER_FAVOR: u8 = 1;
+    const RESOLUTION_PARTIAL_REFUND: u8 = 2;
+
+    /// UPI transaction details
+    struct UPIDetails has store, copy, drop {
+        upi_id: String,
+        transaction_ref: String,
+        amount: u64,
+        verified: bool,
+    }
+
+    /// Escrow condition structure
+    struct EscrowCondition has store, copy, drop {
+        condition_type: String, // "payment_confirmation", "delivery_confirmation", "time_based", etc.
+        condition_data: String, // JSON string with condition parameters
+        is_met: bool,
+        verified_by: Option<address>,
+        verification_timestamp: u64,
+    }
+
+    /// Dispute information
+    struct DisputeInfo has store, copy, drop {
+        dispute_id: u64,
+        raised_by: address,
+        reason: String,
+        evidence: String,
+        timestamp: u64,
+        resolution: Option<u8>,
+        resolved_by: Option<address>,
+        resolution_timestamp: u64,
+    }
+
+    /// Main escrow structure
+    struct Escrow has store, copy, drop {
+        escrow_id: u64,
+        buyer: address,
+        seller: address,
+        amount: u64,
+        state: u8,
+        created_at: u64,
+        expires_at: u64,
+        conditions: vector<EscrowCondition>,
+        upi_details: Option<UPIDetails>,
+        dispute_info: Option<DisputeInfo>,
+        metadata: String, // JSON string for additional data
+    }
+
+    /// Global escrow registry
+    struct EscrowRegistry has key {
+        escrows: vector<Escrow>,
+        next_escrow_id: u64,
+        next_dispute_id: u64,
+        arbitrators: vector<address>,
+        platform_fee_rate: u64, // basis points (e.g., 100 = 1%)
+        dispute_window: u64, // seconds
+    }
+
+    /// Events
+    #[event]
+    struct EscrowCreated has drop, store {
+        escrow_id: u64,
+        buyer: address,
+        seller: address,
+        amount: u64,
+        conditions: vector<EscrowCondition>,
+    }
+
+    #[event]
+    struct EscrowFunded has drop, store {
+        escrow_id: u64,
+        amount: u64,
+        upi_details: UPIDetails,
+    }
+
+    #[event]
+    struct ConditionMet has drop, store {
+        escrow_id: u64,
+        condition_type: String,
+        verified_by: address,
+    }
+
+    #[event]
+    struct EscrowCompleted has drop, store {
+        escrow_id: u64,
+        buyer: address,
+        seller: address,
+        amount: u64,
+    }
+
+    #[event]
+    struct DisputeRaised has drop, store {
+        escrow_id: u64,
+        dispute_id: u64,
+        raised_by: address,
+        reason: String,
+    }
+
+    #[event]
+    struct DisputeResolved has drop, store {
+        escrow_id: u64,
+        dispute_id: u64,
+        resolution: u8,
+        resolved_by: address,
+    }
+
+    /// Initialize the escrow system
+    public entry fun initialize(admin: &signer) {
+        let admin_addr = signer::address_of(admin);
+        
+        if (!exists<EscrowRegistry>(admin_addr)) {
+            move_to(admin, EscrowRegistry {
+                escrows: vector::empty(),
+                next_escrow_id: 1,
+                next_dispute_id: 1,
+                arbitrators: vector::singleton(admin_addr),
+                platform_fee_rate: 100, // 1%
+                dispute_window: 604800, // 7 days in seconds
+            });
+        };
+    }
+
+    /// Create a new escrow
+    public entry fun create_escrow(
+        buyer: &signer,
+        seller: address,
+        amount: u64,
+        duration_seconds: u64,
+        condition_types: vector<String>,
+        condition_data: vector<String>,
+        metadata: String,
+    ) acquires EscrowRegistry {
+        let buyer_addr = signer::address_of(buyer);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        let escrow_id = registry.next_escrow_id;
+        registry.next_escrow_id = registry.next_escrow_id + 1;
+        
+        let conditions = vector::empty<EscrowCondition>();
+        let i = 0;
+        while (i < vector::length(&condition_types)) {
+            let condition = EscrowCondition {
+                condition_type: *vector::borrow(&condition_types, i),
+                condition_data: *vector::borrow(&condition_data, i),
+                is_met: false,
+                verified_by: option::none(),
+                verification_timestamp: 0,
+            };
+            vector::push_back(&mut conditions, condition);
+            i = i + 1;
+        };
+        
+        let escrow = Escrow {
+            escrow_id,
+            buyer: buyer_addr,
+            seller,
+            amount,
+            state: STATE_PENDING,
+            created_at: timestamp::now_seconds(),
+            expires_at: timestamp::now_seconds() + duration_seconds,
+            conditions,
+            upi_details: option::none(),
+            dispute_info: option::none(),
+            metadata,
+        };
+        
+        vector::push_back(&mut registry.escrows, escrow);
+        
+        event::emit(EscrowCreated {
+            escrow_id,
+            buyer: buyer_addr,
+            seller,
+            amount,
+            conditions,
+        });
+    }
+
+    /// Fund escrow with UPI details
+    public entry fun fund_escrow(
+        funder: &signer,
+        escrow_id: u64,
+        upi_id: String,
+        transaction_ref: String,
+        upi_amount: u64,
+    ) acquires EscrowRegistry {
+        let funder_addr = signer::address_of(funder);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(escrow.buyer == funder_addr, E_NOT_AUTHORIZED);
+        assert!(escrow.state == STATE_PENDING, E_INVALID_STATE);
+        assert!(upi_amount >= escrow.amount, E_INSUFFICIENT_FUNDS);
+        assert!(timestamp::now_seconds() < escrow.expires_at, E_ESCROW_EXPIRED);
+        
+        // In a real implementation, you would verify UPI transaction here
+        let upi_details = UPIDetails {
+            upi_id,
+            transaction_ref,
+            amount: upi_amount,
+            verified: true, // This would be done through UPI verification service
+        };
+        
+        escrow.upi_details = option::some(upi_details);
+        escrow.state = STATE_FUNDED;
+        
+        event::emit(EscrowFunded {
+            escrow_id,
+            amount: upi_amount,
+            upi_details,
+        });
+    }
+
+    /// Verify and mark a condition as met
+    public entry fun verify_condition(
+        verifier: &signer,
+        escrow_id: u64,
+        condition_index: u64,
+        verification_data: String,
+    ) acquires EscrowRegistry {
+        let verifier_addr = signer::address_of(verifier);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(escrow.state == STATE_FUNDED, E_INVALID_STATE);
+        assert!(
+            escrow.buyer == verifier_addr || 
+            escrow.seller == verifier_addr || 
+            vector::contains(&registry.arbitrators, &verifier_addr),
+            E_NOT_AUTHORIZED
+        );
+        
+        let condition = vector::borrow_mut(&mut escrow.conditions, condition_index);
+        condition.is_met = true;
+        condition.verified_by = option::some(verifier_addr);
+        condition.verification_timestamp = timestamp::now_seconds();
+        
+        event::emit(ConditionMet {
+            escrow_id,
+            condition_type: condition.condition_type,
+            verified_by: verifier_addr,
+        });
+        
+        // Check if all conditions are met
+        if (all_conditions_met(escrow)) {
+            complete_escrow(escrow_id, registry);
+        };
+    }
+
+    /// Complete escrow and release funds
+    fun complete_escrow(escrow_id: u64, registry: &mut EscrowRegistry) {
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(escrow.state == STATE_FUNDED, E_INVALID_STATE);
+        
+        escrow.state = STATE_COMPLETED;
+        
+        // Calculate platform fee
+        let platform_fee = (escrow.amount * registry.platform_fee_rate) / 10000;
+        let seller_amount = escrow.amount - platform_fee;
+        
+        // In a real implementation, you would transfer funds here
+        // This would involve integrating with UPI payment gateway
+        
+        event::emit(EscrowCompleted {
+            escrow_id,
+            buyer: escrow.buyer,
+            seller: escrow.seller,
+            amount: seller_amount,
+        });
+    }
+
+    /// Raise a dispute
+    public entry fun raise_dispute(
+        disputer: &signer,
+        escrow_id: u64,
+        reason: String,
+        evidence: String,
+    ) acquires EscrowRegistry {
+        let disputer_addr = signer::address_of(disputer);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(
+            escrow.buyer == disputer_addr || escrow.seller == disputer_addr,
+            E_NOT_AUTHORIZED
+        );
+        assert!(escrow.state == STATE_FUNDED, E_INVALID_STATE);
+        assert!(option::is_none(&escrow.dispute_info), E_ALREADY_DISPUTED);
+        assert!(
+            timestamp::now_seconds() <= escrow.expires_at + registry.dispute_window,
+            E_DISPUTE_WINDOW_CLOSED
+        );
+        
+        let dispute_id = registry.next_dispute_id;
+        registry.next_dispute_id = registry.next_dispute_id + 1;
+        
+        let dispute = DisputeInfo {
+            dispute_id,
+            raised_by: disputer_addr,
+            reason,
+            evidence,
+            timestamp: timestamp::now_seconds(),
+            resolution: option::none(),
+            resolved_by: option::none(),
+            resolution_timestamp: 0,
+        };
+        
+        escrow.dispute_info = option::some(dispute);
+        escrow.state = STATE_DISPUTED;
+        
+        event::emit(DisputeRaised {
+            escrow_id,
+            dispute_id,
+            raised_by: disputer_addr,
+            reason,
+        });
+    }
+
+    /// Resolve a dispute (only arbitrators)
+    public entry fun resolve_dispute(
+        arbitrator: &signer,
+        escrow_id: u64,
+        resolution: u8,
+        buyer_refund_percentage: u64, // 0-100, only used for RESOLUTION_PARTIAL_REFUND
+    ) acquires EscrowRegistry {
+        let arbitrator_addr = signer::address_of(arbitrator);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        assert!(vector::contains(&registry.arbitrators, &arbitrator_addr), E_NOT_AUTHORIZED);
+        
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(escrow.state == STATE_DISPUTED, E_INVALID_STATE);
+        
+        let dispute = option::borrow_mut(&mut escrow.dispute_info);
+        dispute.resolution = option::some(resolution);
+        dispute.resolved_by = option::some(arbitrator_addr);
+        dispute.resolution_timestamp = timestamp::now_seconds();
+        
+        escrow.state = STATE_RESOLVED;
+        
+        // Calculate refund amounts based on resolution
+        let (buyer_refund, seller_amount) = match (resolution) {
+            RESOLUTION_BUYER_FAVOR => (escrow.amount, 0),
+            RESOLUTION_SELLER_FAVOR => (0, escrow.amount),
+            RESOLUTION_PARTIAL_REFUND => {
+                let buyer_amount = (escrow.amount * buyer_refund_percentage) / 100;
+                (buyer_amount, escrow.amount - buyer_amount)
+            },
+            _ => (0, 0), // Should not happen
+        };
+        
+        // In a real implementation, process the refunds here
+        
+        event::emit(DisputeResolved {
+            escrow_id,
+            dispute_id: dispute.dispute_id,
+            resolution,
+            resolved_by: arbitrator_addr,
+        });
+    }
+
+    /// Cancel escrow (only before funding)
+    public entry fun cancel_escrow(
+        canceller: &signer,
+        escrow_id: u64,
+    ) acquires EscrowRegistry {
+        let canceller_addr = signer::address_of(canceller);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        let escrow = get_escrow_mut(registry, escrow_id);
+        assert!(
+            escrow.buyer == canceller_addr || escrow.seller == canceller_addr,
+            E_NOT_AUTHORIZED
+        );
+        assert!(escrow.state == STATE_PENDING, E_INVALID_STATE);
+        
+        escrow.state = STATE_CANCELLED;
+    }
+
+    /// View functions
+    #[view]
+    public fun get_escrow(escrow_id: u64): Escrow acquires EscrowRegistry {
+        let registry = borrow_global<EscrowRegistry>(@sutradharx);
+        *get_escrow_ref(registry, escrow_id)
+    }
+
+    #[view]
+    public fun get_escrows_by_buyer(buyer: address): vector<Escrow> acquires EscrowRegistry {
+        let registry = borrow_global<EscrowRegistry>(@sutradharx);
+        let result = vector::empty<Escrow>();
+        let i = 0;
+        while (i < vector::length(&registry.escrows)) {
+            let escrow = vector::borrow(&registry.escrows, i);
+            if (escrow.buyer == buyer) {
+                vector::push_back(&mut result, *escrow);
+            };
+            i = i + 1;
+        };
+        result
+    }
+
+    #[view]
+    public fun get_escrows_by_seller(seller: address): vector<Escrow> acquires EscrowRegistry {
+        let registry = borrow_global<EscrowRegistry>(@sutradharx);
+        let result = vector::empty<Escrow>();
+        let i = 0;
+        while (i < vector::length(&registry.escrows)) {
+            let escrow = vector::borrow(&registry.escrows, i);
+            if (escrow.seller == seller) {
+                vector::push_back(&mut result, *escrow);
+            };
+            i = i + 1;
+        };
+        result
+    }
+
+    /// Helper functions
+    fun get_escrow_mut(registry: &mut EscrowRegistry, escrow_id: u64): &mut Escrow {
+        let i = 0;
+        while (i < vector::length(&registry.escrows)) {
+            let escrow = vector::borrow_mut(&mut registry.escrows, i);
+            if (escrow.escrow_id == escrow_id) {
+                return escrow
+            };
+            i = i + 1;
+        };
+        abort E_ESCROW_NOT_FOUND
+    }
+
+    fun get_escrow_ref(registry: &EscrowRegistry, escrow_id: u64): &Escrow {
+        let i = 0;
+        while (i < vector::length(&registry.escrows)) {
+            let escrow = vector::borrow(&registry.escrows, i);
+            if (escrow.escrow_id == escrow_id) {
+                return escrow
+            };
+            i = i + 1;
+        };
+        abort E_ESCROW_NOT_FOUND
+    }
+
+    fun all_conditions_met(escrow: &Escrow): bool {
+        let i = 0;
+        while (i < vector::length(&escrow.conditions)) {
+            let condition = vector::borrow(&escrow.conditions, i);
+            if (!condition.is_met) {
+                return false
+            };
+            i = i + 1;
+        };
+        true
+    }
+
+    /// Admin functions
+    public entry fun add_arbitrator(
+        admin: &signer,
+        arbitrator: address,
+    ) acquires EscrowRegistry {
+        let admin_addr = signer::address_of(admin);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        // Check if admin is already an arbitrator
+        assert!(vector::contains(&registry.arbitrators, &admin_addr), E_NOT_AUTHORIZED);
+        
+        if (!vector::contains(&registry.arbitrators, &arbitrator)) {
+            vector::push_back(&mut registry.arbitrators, arbitrator);
+        };
+    }
+
+    public entry fun update_platform_fee(
+        admin: &signer,
+        new_fee_rate: u64,
+    ) acquires EscrowRegistry {
+        let admin_addr = signer::address_of(admin);
+        let registry = borrow_global_mut<EscrowRegistry>(@sutradharx);
+        
+        assert!(vector::contains(&registry.arbitrators, &admin_addr), E_NOT_AUTHORIZED);
+        registry.platform_fee_rate = new_fee_rate;
+    }
+}

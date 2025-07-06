@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 275 80% 60%;
+  --primary-foreground: 275 10% 95%;
+
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  
+  --accent: 300 100% 50%;
+  --accent-foreground: 275 10% 95%;
+
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 300 100% 50%;
+
+  --radius: 0.8rem;
+}
+
+.dark {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 275 80% 60%;
+  --primary-foreground: 275 10% 95%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 300 100% 50%;
+  --accent-foreground: 275 10% 95%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 300 100% 50%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+    scroll-behavior: smooth;
+  }
+
+  html {
+    @apply h-full w-full;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    @apply bg-background font-sans text-foreground;
+  }
+}
+
+h1 {
+  @apply font-jakarta text-4xl font-extrabold md:text-6xl;
+}
+
+h2 {
+  @apply font-jakarta text-3xl font-extrabold md:text-5xl;
+}
+
+h3 {
+  @apply font-jakarta text-2xl font-bold md:text-4xl;
+}
+
+h4 {
+  @apply font-jakarta text-xl font-bold md:text-2xl;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary));
+  border-radius: 5px;
+}
